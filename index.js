@@ -16,7 +16,7 @@ app.use(cors({
   origin: [
     "http://localhost:5173",
     "http://localhost:3000",
-    "https://talkportfrontend.vercel.app"
+    "https://chatterbytefrontend.vercel.app"
   ],
   credentials: true
 }));
@@ -87,7 +87,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 
     const frontendRedirect = isLocal
       ? "http://localhost:5173/inbox"
-      : "https://talkportfrontend.vercel.app/inbox";
+      : "https://chatterbytefrontend.vercel.app/inbox";
 
     res.redirect(frontendRedirect);
   } catch (err) {
