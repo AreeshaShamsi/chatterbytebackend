@@ -62,7 +62,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
 
   const redirectUri = isLocal
     ? "http://localhost:5000/api/auth/google/callback"
-    : "https://chatterbytefrontend.vercel.app/api/auth/google/callback";
+    : "https://chatterbytebackend.vercel.app/api/auth/google/callback";
 
   try {
     const oauth2Client = new google.auth.OAuth2(
