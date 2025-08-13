@@ -33,7 +33,7 @@ app.get("/api/auth/google", (req, res) => {
 
   const redirectUri = isLocal
     ? "http://localhost:5000/api/auth/google/callback"
-    : "https://chatterbytefrontend.vercel.app/api/auth/google/callback";
+    : "https://chatterbytebackend.vercel.app/api/auth/google/callback";
 
   const scope = [
     "https://www.googleapis.com/auth/userinfo.email",
