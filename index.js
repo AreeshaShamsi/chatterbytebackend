@@ -1,27 +1,47 @@
 import express from "express";
 import dotenv from "dotenv";
 import cors from "cors";
+import session from "express-session";
+import cookieParser from "cookie-parser";
 import { google } from "googleapis";
 
 dotenv.config();
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
 
-let connectedAccounts = []; // [{ email, tokens, messages }]
+// ✅ CORS setup (allow cookies from frontend)
+app.use(
+  cors({
+    origin: [
+      "http://localhost:5173",
+      "http://localhost:3000",
+      "https://chatterbytefrontend.vercel.app"
+    ],
+    credentials: true
+  })
+);
 
-app.use(cors({
-  origin: [
-    "http://localhost:5173",
-    "http://localhost:3000",
-    "https://chatterbytefrontend.vercel.app"
-  ],
-  credentials: true
-}));
+// ✅ Cookie & Session setup
+app.use(cookieParser());
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "supersecretkey",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production", // HTTPS only in prod
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax", // required for cross-site cookies
+      maxAge: 24 * 60 * 60 * 1000 // 1 day
+    }
+  })
+);
 
-// 🌐 Root
+// 🌐 Root route
 app.get("/", (req, res) => {
   res.send("📡 API is running 🚀");
 });
@@ -52,10 +72,7 @@ app.get("/api/auth/google", (req, res) => {
 // 🔄 Google OAuth Callback
 app.get("/api/auth/google/callback", async (req, res) => {
   const { code } = req.query;
-
-  if (!code) {
-    return res.status(400).send("Missing authorization code.");
-  }
+  if (!code) return res.status(400).send("Missing authorization code.");
 
   const isLocal =
     req.headers.host?.includes("localhost") || req.headers.host?.includes("127.0.0.1");
@@ -65,11 +82,7 @@ app.get("/api/auth/google/callback", async (req, res) => {
     : "https://chatterbytebackend.vercel.app/api/auth/google/callback";
 
   try {
-    const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID,
-      CLIENT_SECRET,
-      redirectUri
-    );
+    const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, redirectUri);
 
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
@@ -78,12 +91,8 @@ app.get("/api/auth/google/callback", async (req, res) => {
     const { data: userInfo } = await oauth2.userinfo.get();
     const email = userInfo.email;
 
-    const messages = await fetchEmails(oauth2Client);
-
-    // Store account with tokens for later refresh
-    if (!connectedAccounts.find(acc => acc.email === email)) {
-      connectedAccounts.push({ email, tokens, messages });
-    }
+    // ✅ Save user in session
+    req.session.user = { email, tokens };
 
     const frontendRedirect = isLocal
       ? "http://localhost:5173/inbox"
@@ -96,44 +105,41 @@ app.get("/api/auth/google/callback", async (req, res) => {
   }
 });
 
-// 📩 Get all connected emails with latest messages
+// 📩 Get logged-in user's emails
 app.get("/api/emails", async (req, res) => {
+  if (!req.session.user) {
+    return res.status(401).json({ error: "Not logged in" });
+  }
+
   try {
-    const updatedAccounts = [];
+    const { tokens, email } = req.session.user;
+    const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET);
+    oauth2Client.setCredentials(tokens);
 
-    for (const account of connectedAccounts) {
-      const oauth2Client = new google.auth.OAuth2(
-        CLIENT_ID,
-        CLIENT_SECRET
-      );
-      oauth2Client.setCredentials(account.tokens);
-
-      const messages = await fetchEmails(oauth2Client);
-      updatedAccounts.push({ email: account.email, messages });
-    }
-
-    res.json(updatedAccounts);
+    const messages = await fetchEmails(oauth2Client);
+    res.json([{ email, messages }]);
   } catch (error) {
     console.error("❌ Error fetching emails:", error.message);
     res.status(500).json({ error: "Failed to fetch emails" });
   }
 });
 
-// ❌ Delete an email account
-app.delete("/api/emails/:email", (req, res) => {
-  const emailToDelete = req.params.email;
-  connectedAccounts = connectedAccounts.filter(acc => acc.email !== emailToDelete);
-  res.json({ success: true });
+// ❌ Logout route
+app.post("/api/logout", (req, res) => {
+  req.session.destroy(err => {
+    if (err) return res.status(500).json({ error: "Logout failed" });
+    res.clearCookie("connect.sid");
+    res.json({ success: true });
+  });
 });
 
-// 📬 Fetch recent emails
 // 📬 Fetch recent emails
 async function fetchEmails(oauth2Client) {
   const gmail = google.gmail({ version: "v1", auth: oauth2Client });
 
   const res = await gmail.users.messages.list({
     userId: "me",
-    maxResults: 5 // ⬅️ Only get 5 most recent emails
+    maxResults: 5
   });
 
   if (!res.data.messages) return [];
@@ -146,8 +152,7 @@ async function fetchEmails(oauth2Client) {
       });
 
       const headers = msgDetail.data.payload?.headers || [];
-      const getHeader = name =>
-        headers.find(h => h.name === name)?.value || "";
+      const getHeader = name => headers.find(h => h.name === name)?.value || "";
 
       let textPlain = "";
       let textHtml = "";
@@ -156,14 +161,14 @@ async function fetchEmails(oauth2Client) {
         if (msgDetail.data.payload.parts && msgDetail.data.payload.parts.length) {
           for (const part of msgDetail.data.payload.parts) {
             if (part.mimeType === "text/plain" && part.body?.data) {
-              textPlain = Buffer.from(part.body.data, 'base64').toString('utf-8');
+              textPlain = Buffer.from(part.body.data, "base64").toString("utf-8");
             }
             if (part.mimeType === "text/html" && part.body?.data) {
-              textHtml = Buffer.from(part.body.data, 'base64').toString('utf-8');
+              textHtml = Buffer.from(part.body.data, "base64").toString("utf-8");
             }
           }
         } else if (msgDetail.data.payload.body?.data) {
-          textPlain = Buffer.from(msgDetail.data.payload.body.data, 'base64').toString('utf-8');
+          textPlain = Buffer.from(msgDetail.data.payload.body.data, "base64").toString("utf-8");
         }
       }
 
@@ -180,7 +185,6 @@ async function fetchEmails(oauth2Client) {
 
   return messages;
 }
-
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
